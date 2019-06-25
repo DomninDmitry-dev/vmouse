@@ -28,7 +28,7 @@
 		<link>
 			<name>include</name>
 			<type>2</type>
-			<location>/usr/src/linux-headers-4.18.0-20-generic</location>
+			<location>/usr/src/linux-headers-4.15.0-51-generic</location>
 		</link>
 	</linkedResources>
 </projectDescription>

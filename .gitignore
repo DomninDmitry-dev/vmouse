@@ -1,3 +1,4 @@
+test
 *.swp
 *.o
 *.symvers
@@ -5,6 +6,12 @@
 *.ko
 *.cmd
 *.mod.c
+*.cache.mk
+*.cproject
+*.project
+*.dwo
+*.sh
 /.tmp_versions
-test
-
+/include
+/.settings
+/.tracecompass
