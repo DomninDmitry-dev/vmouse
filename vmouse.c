@@ -22,12 +22,18 @@
 
 #define MYDEV_NAME	"vmouse"
 
-static int my_major = 0, my_minor = 0;
-static struct input_dev *idev;
-static dev_t dev;
-static struct device pdev = { .init_name = MYDEV_NAME };
-static struct class * cl;
-static struct cdev my_cdev;
+struct vmouse_device {
+	int my_major, my_minor;
+    signed char data[4];     /* use a 4-byte protocol */
+    struct input_dev *idev;   /* input device, to push out input  data */
+    int x, y;                /* keep track of the position of this device */
+    dev_t dev;
+    struct device pdev;
+    struct class * cl;
+    struct cdev my_cdev;
+};
+
+static struct vmouse_device vmouse = { .pdev.init_name = MYDEV_NAME };
 
 /*----------------------------------------------------------------------------*/
 static int mychrdev_open(struct inode *inode, struct file *file)
@@ -35,16 +41,16 @@ static int mychrdev_open(struct inode *inode, struct file *file)
 	static int counter = 0;
 	counter++;
 
-	dev_info(&pdev,"Opening device %s:\n", MYDEV_NAME);
-	dev_info(&pdev,"Counter: %d\n", counter);
-	dev_info(&pdev,"Module refcounter: %d\n", module_refcount(THIS_MODULE));
+	dev_info(&vmouse.pdev,"Opening device %s:\n", MYDEV_NAME);
+	dev_info(&vmouse.pdev,"Counter: %d\n", counter);
+	dev_info(&vmouse.pdev,"Module refcounter: %d\n", module_refcount(THIS_MODULE));
 
 	return 0;
 }
 /*----------------------------------------------------------------------------*/
 static int mychrdev_release(struct inode *inode, struct file *file)
 {
-	dev_info(&pdev,"Releasing device - %s\n", MYDEV_NAME);
+	dev_info(&vmouse.pdev,"Releasing device - %s\n", MYDEV_NAME);
 	return 0;
 }
 /*----------------------------------------------------------------------------*/
@@ -70,29 +76,66 @@ static ssize_t mychrdev_read(struct file * file, char __user *buf, size_t lbuf, 
         "  Each command is terminated with '\\n'. Short writes == dropped commands.\n"
         "  Read linux Documentation/input/multi-touch-protocol.txt to read about events\n";
     const size_t msgsize = strlen(message);
-    if (*ppos >= msgsize) {
+    int nbytes;
+
+    //dev_info(&pdev, "ppos = %d\n", *ppos);
+    //dev_info(&pdev, "lbuf = %d\n", lbuf);
+    //dev_info(&pdev, "msgsize = %d\n", msgsize);
+
+
+    if(*ppos >= msgsize) {
 		return 0;
 	}
-	if (lbuf > msgsize - *ppos) {
+	if(lbuf > msgsize - *ppos) {
 		lbuf = msgsize - *ppos;
 	}
-	int nbytes = lbuf - copy_to_user(buf, *ppos + message, lbuf);
+	nbytes = lbuf - copy_to_user(buf, *ppos + message, lbuf);
 
-	dev_info(&pdev,"Read device %s nbytes = %d, ppos = %d:\n", MYDEV_NAME, nbytes, (int)*ppos);
+	dev_info(&vmouse.pdev,"Read device %s nbytes = %d, ppos = %d:\n", MYDEV_NAME, nbytes, (int)*ppos);
 
 	*ppos += nbytes;
+
 	return nbytes;
 }
 /*----------------------------------------------------------------------------*/
 static ssize_t mychrdev_write(struct file * file, const char __user *buf, size_t lbuf, loff_t *ppos)
 {
-/*	int nbytes = lbuf - copy_from_user(*ppos, buf, lbuf);
+	char mybuf[64] = {0};
+	int nbytes, len;
+	char command;
+	int arg;
+
+	if(lbuf > sizeof(mybuf)) lbuf = sizeof(mybuf);
+
+	nbytes = lbuf - copy_from_user(mybuf + *ppos, buf, lbuf);
 	*ppos += nbytes;
-	kbuf[*ppos] = 0;
 
-	dev_info(&pdev,"Write device %s nbytes = %d, ppos = %d, data: %s\n\n", MYDEV_NAME, nbytes, (int)*ppos, kbuf);
+	dev_info(&vmouse.pdev,"Write device %s nbytes = %d, ppos = %d, data: %s\n", MYDEV_NAME, nbytes, (int)*ppos, mybuf);
 
-	return nbytes;*/
+	for(len=0; len<lbuf; ++len) {
+		if (mybuf[len] == '\n') {
+			mybuf[len] = '\0';
+			if(sscanf(mybuf, "%c%d", &command, &arg) != 2) {
+				dev_info(&vmouse.pdev, "sscanf failed to interpret this input\n");
+			}
+			dev_info(&vmouse.pdev, "command = %c, arg = %d", command, arg);
+			switch(command) {
+				case 'r': {
+					//input_report_rel(vmouse.idev, REL_X, 100);
+					//input_report_rel(vmouse.idev, REL_Y, 100);
+					//right click press down
+					input_report_key(vmouse.idev, BTN_LEFT, 1);
+					input_sync(vmouse.idev);
+					input_report_key(vmouse.idev, BTN_LEFT, 0);
+					input_sync(vmouse.idev);
+					break;
+				}
+			}
+		}
+	}
+	//input_sync(vmouse.idev);
+
+	return nbytes;
 }
 /*----------------------------------------------------------------------------*/
 static const struct file_operations mycdev_fops = {
@@ -107,30 +150,56 @@ int init_module(void)
 {
 	int ret;
 
-	dev_info(&pdev,"Hello, loading module\n");
+	dev_info(&vmouse.pdev,"Hello, loading module\n");
 
 	// Задаем статически младший и старший номер устройства
-	if(my_major != 0) { // Статически из параметра модуля
-		dev = MKDEV(my_major, my_minor);
-		ret = register_chrdev_region(dev, 1, MYDEV_NAME);
+	if(vmouse.my_major != 0) { // Статически из параметра модуля
+		vmouse.dev = MKDEV(vmouse.my_major, vmouse.my_minor);
+		ret = register_chrdev_region(vmouse.dev, 1, MYDEV_NAME);
 	}
 	else { // Динамически
-		ret = alloc_chrdev_region(&dev, my_minor, 1, MYDEV_NAME);
-		my_major = MAJOR(dev);  // не забыть зафиксировать!
+		ret = alloc_chrdev_region(&vmouse.dev, vmouse.my_minor, 1, MYDEV_NAME);
+		vmouse.my_major = MAJOR(vmouse.dev);  // не забыть зафиксировать!
 	}
 	if(ret < 0) {
-		dev_info(&pdev,"Can not register char device region\n");
+		dev_info(&vmouse.pdev,"Can not register char device region\n");
 		goto err;
 	}
-	dev_info(&pdev,"Device registered: MAJOR = %d, MINOR = %d\n", my_major, my_minor);
+	dev_info(&vmouse.pdev,"Device registered: MAJOR = %d, MINOR = %d\n", vmouse.my_major, vmouse.my_minor);
 
-	cdev_init(&my_cdev, &mycdev_fops);
-	ret = cdev_add(&my_cdev, dev, 1);
+	cdev_init(&vmouse.my_cdev, &mycdev_fops);
+	ret = cdev_add(&vmouse.my_cdev, vmouse.dev, 1);
 
-	cl = class_create(THIS_MODULE, MYDEV_NAME);
-	if (!IS_ERR(cl)) {
-		device_create(cl, NULL, dev, "%s", MYDEV_NAME);
+	vmouse.cl = class_create(THIS_MODULE, MYDEV_NAME);
+	if (!IS_ERR(vmouse.cl)) {
+		device_create(vmouse.cl, NULL, vmouse.dev, "%s", MYDEV_NAME);
 	}
+
+	vmouse.idev = input_allocate_device();
+	if (!vmouse.idev) {
+		dev_info(&vmouse.pdev,"Not enough memory\n");
+		goto err;
+	}
+
+	set_bit(EV_REL, vmouse.idev->evbit);
+	set_bit(REL_X, vmouse.idev->relbit);
+	set_bit(REL_Y, vmouse.idev->relbit);
+	set_bit(REL_WHEEL, vmouse.idev->relbit);
+
+	set_bit(EV_KEY, vmouse.idev->evbit);
+	set_bit(BTN_LEFT, vmouse.idev->keybit);
+	set_bit(BTN_MIDDLE, vmouse.idev->keybit);
+	set_bit(BTN_RIGHT, vmouse.idev->keybit);
+
+	vmouse.idev->name = "Virtual Mouse";
+	vmouse.idev->id.bustype = BUS_VIRTUAL;
+	vmouse.idev->id.vendor  = 0x0000;
+	vmouse.idev->id.product = 0x0000;
+	vmouse.idev->id.version = 0x0000;
+
+	ret = input_register_device(vmouse.idev);
+	if(ret)
+		goto err;
 
 	return 0;
 
@@ -140,14 +209,15 @@ err:
 /*----------------------------------------------------------------------------*/
 void cleanup_module(void)
 {
-    if (!IS_ERR(cl)) {
-	    device_destroy(cl, dev);
-	    class_destroy(cl);
-	    cdev_del(&my_cdev);
+    if (!IS_ERR(vmouse.cl)) {
+	    device_destroy(vmouse.cl, vmouse.dev);
+	    class_destroy(vmouse.cl);
+	    cdev_del(&vmouse.my_cdev);
     }
-    unregister_chrdev_region(dev, 1);
+    unregister_chrdev_region(vmouse.dev, 1);
+    input_unregister_device(vmouse.idev);
 
-	dev_info(&pdev, "Exit module\n");
+	dev_info(&vmouse.pdev, "Exit module\n");
 }
 /*----------------------------------------------------------------------------*/
 
